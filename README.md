@@ -17,6 +17,15 @@ python3 analysis/match_to_tactic.py match.mp4 --calib calib.json --out tactic.js
     --start 63 --end 75 --step 2 --name "Counter vs. high line"
 ```
 
+**Panning/tactical cameras** (the camera follows play): calibrate one clear frame — the midfield view with the center circle works best — then let `analysis/pan_chain.py` track the camera motion and carry that calibration across the whole clip:
+
+```
+python3 analysis/pan_chain.py clip.mp4 --calib calib.json --ref-time 14.3 --out chainH.json
+python3 analysis/match_to_tactic.py clip.mp4 --chain chainH.json --out tactic.json --detector yolo --imgsz 1600
+```
+
+This works because a pilot camera rotates and zooms from a fixed point, so consecutive frames are related by a global homography (verified on real Premier League tactical-camera footage).
+
 The calibration file maps at least four known pitch landmarks (box corners, center spot, line intersections) from image pixels to pitch meters. Create it with **`analysis/calibrate.html`** — open it in a browser, load the match video (or a frame grab), scrub to a clear frame, click a landmark on the frame and then the same spot on the schematic pitch (clicks snap to standard landmarks), repeat four or more times, and export `calib.json`. See the script's docstring for the available detectors (`yolo`, `hog`, or `color`). A fixed tactical camera needs one calibration; broadcast footage should be analysed one camera shot at a time.
 
 The pipeline is verified end-to-end against a synthetic match clip rendered through a known camera perspective: it recovers all 22 players and the ball with a mean position error of about 1.3 m.

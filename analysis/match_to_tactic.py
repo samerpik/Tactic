@@ -224,7 +224,8 @@ def assign_slots(team_pts, slots, prev):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
-    ap.add_argument("--calib", required=True, help="JSON file with px->pitch point pairs")
+    ap.add_argument("--calib", help="JSON file with px->pitch point pairs (fixed camera)")
+    ap.add_argument("--chain", help="per-time homographies from pan_chain.py (panning camera); overrides --calib")
     ap.add_argument("--out", default="tactic.json")
     ap.add_argument("--name", default="Analysed sequence")
     ap.add_argument("--start", type=float, default=0.0, help="seconds")
@@ -236,7 +237,13 @@ def main():
     ap.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
     args = ap.parse_args()
 
-    H = load_homography(args.calib)
+    chain = None
+    if args.chain:
+        chain = {float(k): np.array(v) for k, v in json.load(open(args.chain)).items()}
+    elif args.calib:
+        H = load_homography(args.calib)
+    else:
+        sys.exit("pass --calib (fixed camera) or --chain (panning camera, from pan_chain.py)")
 
     detector = args.detector
     model = None
@@ -265,6 +272,12 @@ def main():
     keyframes = []
     t = args.start
     while t <= end + 1e-9 and len(keyframes) < args.max_steps:
+        if chain is not None:
+            ct = min(chain, key=lambda u: abs(u - t))
+            if abs(ct - t) > 0.5:
+                t += args.step
+                continue        # chain broke around this time; skip the keyframe
+            H = chain[ct]
         cap.set(cv2.CAP_PROP_POS_FRAMES, round(t * fps))
         ok, frame = cap.read()
         if not ok:
