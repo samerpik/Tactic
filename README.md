@@ -1,3 +1,26 @@
+# Tactics Boards
+
+Interactive tactics whiteboards, each built as a single self-contained HTML file — no installation or build step required.
+
+- **`Waterpolo Tactic.html`** — water polo, 7v7 pool
+- **`Football Tactic.html`** — football, 11v11 full pitch (home 4-3-3 in red vs. away 4-4-2 in white, yellow goalkeepers)
+
+Both share the same workflow: drag players and the ball into position, add steps, and play the sequence back as an animation.
+
+## Football: from match video to an animated scene
+
+`analysis/match_to_tactic.py` turns real match footage into a draft tactic using computer vision: it detects players in sampled frames, splits them into teams by shirt colour, projects their feet onto real pitch coordinates through a calibrated homography, and tracks them into stable player slots. The output JSON imports straight into `Football Tactic.html`, where the coach reviews and edits each step before saving and presenting it to the team.
+
+```
+pip install opencv-python-headless numpy   # optionally: ultralytics for YOLO detection
+python3 analysis/match_to_tactic.py match.mp4 --calib calib.json --out tactic.json \
+    --start 63 --end 75 --step 2 --name "Counter vs. high line"
+```
+
+The calibration file maps at least four known pitch landmarks (box corners, center spot, line intersections) from image pixels to pitch meters — see the docstring in the script for the format and for the available detectors (`yolo`, `hog`, or `color`). A fixed tactical camera needs one calibration; broadcast footage should be analysed one camera shot at a time.
+
+The pipeline is verified end-to-end against a synthetic match clip rendered through a known camera perspective: it recovers all 22 players and the ball with a mean position error of about 1.3 m.
+
 # Water Polo Tactics
 
 An interactive tactics whiteboard for water polo, built as a single self-contained HTML file — no installation or build step required.
