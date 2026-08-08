@@ -90,8 +90,10 @@ def detect_hog(frame, hog):
     return out
 
 
-def detect_yolo(frame, model):
-    res = model.predict(frame, classes=[0], verbose=False, conf=0.35)[0]
+def detect_yolo(frame, model, imgsz=1280, conf=0.25):
+    # high imgsz matters: on tactical-camera footage players are only tens of
+    # pixels tall and vanish at YOLO's default 640 inference size
+    res = model.predict(frame, classes=[0], verbose=False, conf=conf, imgsz=imgsz)[0]
     out = []
     for box in res.boxes.xyxy.cpu().numpy():
         x1, y1, x2, y2 = box[:4]
@@ -230,6 +232,8 @@ def main():
     ap.add_argument("--step", type=float, default=2.0, help="seconds between steps")
     ap.add_argument("--detector", choices=["auto", "yolo", "hog", "color"], default="auto")
     ap.add_argument("--max-steps", type=int, default=12)
+    ap.add_argument("--imgsz", type=int, default=1280, help="YOLO inference size; raise for small/distant players")
+    ap.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
     args = ap.parse_args()
 
     H = load_homography(args.calib)
@@ -266,7 +270,7 @@ def main():
         if not ok:
             break
         if detector == "yolo":
-            dets = detect_yolo(frame, model)
+            dets = detect_yolo(frame, model, args.imgsz, args.conf)
         elif detector == "hog":
             dets = detect_hog(frame, hog)
         else:
