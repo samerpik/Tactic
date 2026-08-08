@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pitch Calibration</title>
+<style>
+  :root {
+    --bg: #0e1621;
+    --panel: #16222f;
+    --panel2: #1d2c3c;
+    --line: #2c3e50;
+    --text: #e8eef4;
+    --muted: #8fa3b5;
+    --accent: #2e86de;
+    --accent2: #10ac84;
+    --danger: #e55039;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; font-weight: 700; white-space: nowrap; }
+  header h1 span { color: var(--accent2); }
+  .spacer { flex: 1; }
+  button {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { background: #24384c; border-color: #3d566e; }
+  button.good { background: var(--accent2); border-color: var(--accent2); font-weight: 600; }
+  button.good:hover { background: #0d9070; }
+  button.danger { color: #ff8a75; }
+  button:disabled { opacity: .4; cursor: default; }
+
+  #status {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  #status.arm { color: #f6e05e; border-color: #f6e05e; }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 12px;
+    min-height: 0;
+  }
+  .pane {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .pane h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    padding: 10px 12px 6px;
+  }
+  .canvasHolder {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    padding: 8px;
+  }
+  canvas { max-width: 100%; max-height: 100%; border-radius: 8px; cursor: crosshair; }
+  .paneFooter { padding: 8px 12px; display: flex; gap: 10px; align-items: center; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  .small { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+  #pairs {
+    height: 130px;     /* fixed so the canvases never shift while clicking points */
+    flex-shrink: 0;
+    overflow-y: auto;
+    border-top: 1px solid var(--line);
+    padding: 6px 12px;
+    font-size: 12.5px;
+  }
+  .pairRow { display: flex; gap: 8px; align-items: center; padding: 3px 0; color: var(--muted); }
+  .pairRow b { color: var(--text); }
+  .pairRow button { padding: 1px 7px; font-size: 11px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎯 Pitch <span>Calibration</span></h1>
+  <button id="btnLoad" class="good">Load video / image</button>
+  <input type="file" id="fileInput" accept="video/*,image/*" style="display:none">
+  <div id="status">Load a clip or a frame grab of the match camera.</div>
+  <div class="spacer"></div>
+  <button id="btnUndo">Undo point</button>
+  <button id="btnClear" class="danger">Clear all</button>
+  <button id="btnExport" class="good" disabled>Export calib.json</button>
+</header>
+
+<main>
+  <div class="pane">
+    <h2>1 · Camera frame — click a landmark you can identify</h2>
+    <div class="canvasHolder"><canvas id="frame" width="640" height="360"></canvas></div>
+    <div class="paneFooter" id="videoControls" style="display:none">
+      <span class="small">Scrub to a clear frame</span>
+      <input type="range" id="seek" min="0" max="100" step="0.1" value="0">
+      <span class="small" id="timeLabel">0.0s</span>
+    </div>
+  </div>
+  <div class="pane">
+    <h2>2 · Pitch map — click the same spot (snaps to standard landmarks)</h2>
+    <div class="canvasHolder"><canvas id="pitch"></canvas></div>
+    <div id="pairs"></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+/* ---------------- pitch schematic ---------------- */
+const PITCH_W = 105, PITCH_H = 68, PMARGIN = 4;
+const pitchCanvas = document.getElementById("pitch");
+const pctx = pitchCanvas.getContext("2d");
+const PSCALE = 8;
+pitchCanvas.width = (PITCH_W + PMARGIN * 2) * PSCALE;
+pitchCanvas.height = (PITCH_H + PMARGIN * 2) * PSCALE;
+const pmx = m => (m + PMARGIN) * PSCALE;
+const pmy = m => (m + PMARGIN) * PSCALE;
+
+// standard landmarks a coach can identify on the lines
+const LANDMARKS = [];
+{
+  const midY = PITCH_H / 2;
+  for (const x of [0, PITCH_W]) {
+    LANDMARKS.push([x, 0], [x, PITCH_H]);                                 // corners
+    const d = x === 0 ? 1 : -1;
+    LANDMARKS.push([x + d * 16.5, midY - 20.16], [x + d * 16.5, midY + 20.16]); // box corners
+    LANDMARKS.push([x + d * 5.5, midY - 9.16],  [x + d * 5.5, midY + 9.16]);   // goal-area corners
+    LANDMARKS.push([x + d * 11, midY]);                                   // penalty spots
+    LANDMARKS.push([x, midY - 20.16], [x, midY + 20.16]);                 // box meets goal line
+    LANDMARKS.push([x, midY - 9.16],  [x, midY + 9.16]);                  // goal area meets goal line
+  }
+  LANDMARKS.push([PITCH_W / 2, 0], [PITCH_W / 2, PITCH_H]);               // halfway × touchlines
+  LANDMARKS.push([PITCH_W / 2, midY]);                                    // center spot
+  LANDMARKS.push([PITCH_W / 2, midY - 9.15], [PITCH_W / 2, midY + 9.15]); // circle × halfway
+}
+
+function drawPitchMap() {
+  const c = pitchCanvas;
+  pctx.fillStyle = "#0d2818";
+  pctx.fillRect(0, 0, c.width, c.height);
+  pctx.fillStyle = "#2a8c3e";
+  pctx.fillRect(pmx(0), pmy(0), PITCH_W * PSCALE, PITCH_H * PSCALE);
+  pctx.strokeStyle = "rgba(255,255,255,0.9)";
+  pctx.lineWidth = 1.6;
+  pctx.strokeRect(pmx(0), pmy(0), PITCH_W * PSCALE, PITCH_H * PSCALE);
+  pctx.beginPath(); pctx.moveTo(pmx(PITCH_W/2), pmy(0)); pctx.lineTo(pmx(PITCH_W/2), pmy(PITCH_H)); pctx.stroke();
+  pctx.beginPath(); pctx.arc(pmx(PITCH_W/2), pmy(PITCH_H/2), 9.15*PSCALE, 0, Math.PI*2); pctx.stroke();
+  const midY = PITCH_H / 2;
+  for (const b of [{x:0,dir:1},{x:PITCH_W,dir:-1}]) {
+    pctx.strokeRect(pmx(Math.min(b.x, b.x+b.dir*16.5)), pmy(midY-20.16), 16.5*PSCALE, 40.32*PSCALE);
+    pctx.strokeRect(pmx(Math.min(b.x, b.x+b.dir*5.5)),  pmy(midY-9.16),  5.5*PSCALE,  18.32*PSCALE);
+    const a = Math.acos(5.5/9.15);
+    pctx.beginPath();
+    if (b.dir === 1) pctx.arc(pmx(b.x+11), pmy(midY), 9.15*PSCALE, -a, a);
+    else pctx.arc(pmx(b.x-11), pmy(midY), 9.15*PSCALE, Math.PI-a, Math.PI+a);
+    pctx.stroke();
+  }
+  // landmark dots
+  pctx.fillStyle = "rgba(246,224,94,0.85)";
+  for (const [x, y] of LANDMARKS) {
+    pctx.beginPath(); pctx.arc(pmx(x), pmy(y), 3, 0, Math.PI*2); pctx.fill();
+  }
+  // committed pairs
+  pairs.forEach((p, i) => drawMarker(pctx, pmx(p.pitch[0]), pmy(p.pitch[1]), i + 1));
+}
+
+function drawMarker(ctx2, x, y, n) {
+  ctx2.beginPath(); ctx2.arc(x, y, 9, 0, Math.PI*2);
+  ctx2.fillStyle = "#2e86de"; ctx2.fill();
+  ctx2.lineWidth = 2; ctx2.strokeStyle = "#fff"; ctx2.stroke();
+  ctx2.fillStyle = "#fff"; ctx2.font = "bold 11px sans-serif";
+  ctx2.textAlign = "center"; ctx2.textBaseline = "middle";
+  ctx2.fillText(n, x, y);
+}
+
+/* ---------------- camera frame ---------------- */
+const frameCanvas = document.getElementById("frame");
+const fctx = frameCanvas.getContext("2d");
+let media = null;          // <video> or <img>
+let isVideo = false;
+
+function drawFrame() {
+  if (!media) {
+    fctx.fillStyle = "#101a26";
+    fctx.fillRect(0, 0, frameCanvas.width, frameCanvas.height);
+    fctx.fillStyle = "#8fa3b5";
+    fctx.font = "16px sans-serif";
+    fctx.textAlign = "center";
+    fctx.fillText("Load a video or image of the match camera", frameCanvas.width/2, frameCanvas.height/2);
+  } else {
+    fctx.drawImage(media, 0, 0, frameCanvas.width, frameCanvas.height);
+  }
+  pairs.forEach((p, i) => drawMarker(fctx, p.px[0] * frameCanvas.width / naturalW, p.px[1] * frameCanvas.height / naturalH, i + 1));
+  if (pendingPx) drawMarker(fctx, pendingPx[0] * frameCanvas.width / naturalW, pendingPx[1] * frameCanvas.height / naturalH, pairs.length + 1);
+}
+
+let naturalW = 640, naturalH = 360;
+
+document.getElementById("btnLoad").onclick = () => document.getElementById("fileInput").click();
+document.getElementById("fileInput").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  isVideo = file.type.startsWith("video");
+  document.getElementById("videoControls").style.display = isVideo ? "flex" : "none";
+  if (isVideo) {
+    media = document.createElement("video");
+    media.muted = true;
+    media.src = url;
+    media.addEventListener("loadedmetadata", () => {
+      naturalW = media.videoWidth; naturalH = media.videoHeight;
+      frameCanvas.width = naturalW; frameCanvas.height = naturalH;
+      document.getElementById("seek").max = media.duration;
+      media.currentTime = 0;
+    });
+    media.addEventListener("seeked", () => { drawFrame(); });
+    media.addEventListener("loadeddata", () => { drawFrame(); setStatus(); });
+  } else {
+    media = new Image();
+    media.onload = () => {
+      naturalW = media.naturalWidth; naturalH = media.naturalHeight;
+      frameCanvas.width = naturalW; frameCanvas.height = naturalH;
+      drawFrame(); setStatus();
+    };
+    media.src = url;
+  }
+});
+
+document.getElementById("seek").addEventListener("input", e => {
+  if (media && isVideo) {
+    media.currentTime = parseFloat(e.target.value);
+    document.getElementById("timeLabel").textContent = parseFloat(e.target.value).toFixed(1) + "s";
+  }
+});
+
+/* ---------------- pairing logic ---------------- */
+let pairs = [];        // {px:[x,y], pitch:[X,Y]}
+let pendingPx = null;  // frame point waiting for its pitch point
+
+function setStatus(msg, arm) {
+  const el = document.getElementById("status");
+  if (msg) { el.textContent = msg; }
+  else if (!media) { el.textContent = "Load a clip or a frame grab of the match camera."; }
+  else if (pendingPx) { el.textContent = `Point ${pairs.length + 1}: now click the same spot on the pitch map →`; arm = true; }
+  else if (pairs.length < 4) { el.textContent = `Point ${pairs.length + 1} of at least 4: click a landmark on the camera frame.`; }
+  else { el.textContent = `${pairs.length} points — you can export, or add more for accuracy.`; }
+  el.classList.toggle("arm", !!arm);
+  document.getElementById("btnExport").disabled = pairs.length < 4;
+  renderPairs();
+}
+
+frameCanvas.addEventListener("click", e => {
+  if (!media) return;
+  const r = frameCanvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * naturalW / r.width;
+  const y = (e.clientY - r.top) * naturalH / r.height;
+  pendingPx = [Math.round(x * 10) / 10, Math.round(y * 10) / 10];
+  drawFrame();
+  setStatus();
+});
+
+pitchCanvas.addEventListener("click", e => {
+  if (!pendingPx) { setStatus("Click the landmark on the camera frame first.", true); return; }
+  const r = pitchCanvas.getBoundingClientRect();
+  let X = (e.clientX - r.left) * pitchCanvas.width / r.width / PSCALE - PMARGIN;
+  let Y = (e.clientY - r.top) * pitchCanvas.height / r.height / PSCALE - PMARGIN;
+  // snap to the nearest standard landmark within 3 m
+  let best = null, bestD = 3;
+  for (const [lx, ly] of LANDMARKS) {
+    const d = Math.hypot(lx - X, ly - Y);
+    if (d < bestD) { bestD = d; best = [lx, ly]; }
+  }
+  if (best) { X = best[0]; Y = best[1]; }
+  pairs.push({ px: pendingPx, pitch: [Math.round(X * 100) / 100, Math.round(Y * 100) / 100] });
+  pendingPx = null;
+  drawFrame();
+  drawPitchMap();
+  setStatus();
+});
+
+function renderPairs() {
+  const el = document.getElementById("pairs");
+  el.innerHTML = "";
+  pairs.forEach((p, i) => {
+    const row = document.createElement("div");
+    row.className = "pairRow";
+    row.innerHTML = `<b>${i + 1}</b> image (${p.px[0]}, ${p.px[1]}) → pitch (${p.pitch[0]} m, ${p.pitch[1]} m)`;
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.onclick = () => { pairs.splice(i, 1); drawFrame(); drawPitchMap(); setStatus(); };
+    row.appendChild(del);
+    el.appendChild(row);
+  });
+}
+
+document.getElementById("btnUndo").onclick = () => {
+  if (pendingPx) pendingPx = null;
+  else pairs.pop();
+  drawFrame(); drawPitchMap(); setStatus();
+};
+document.getElementById("btnClear").onclick = () => {
+  pairs = []; pendingPx = null;
+  drawFrame(); drawPitchMap(); setStatus();
+};
+
+document.getElementById("btnExport").onclick = () => {
+  const blob = new Blob([JSON.stringify({ points: pairs }, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "calib.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+drawPitchMap();
+drawFrame();
+setStatus();
+</script>
+</body>
+</html>
