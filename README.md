@@ -17,7 +17,9 @@ python3 analysis/match_to_tactic.py match.mp4 --calib calib.json --out tactic.js
     --start 63 --end 75 --step 2 --name "Counter vs. high line"
 ```
 
-**Panning/tactical cameras** (the camera follows play): calibrate one clear frame — the midfield view with the center circle works best — then let `analysis/pan_chain.py` track the camera motion and carry that calibration across the whole clip:
+**Fully automatic calibration (recommended):** `analysis/pnl_calibrate.py` uses the PnLCalib neural network (state-of-the-art on the SoccerNet-Calibration benchmark; weights are free GitHub downloads, GPL-2.0) to detect pitch keypoints and lines on every sampled frame and compute the image-to-pitch homography with no manual clicks, no reference frame, and no camera-motion chaining — see the script docstring for setup. Polish the result with `refine_pitch_lines.py` for another ~30–50% alignment gain; the combination measured 1.5–3.5 px median line alignment on real Premier League tactical-camera footage.
+
+**Manual fallback — panning/tactical cameras** (the camera follows play): calibrate one clear frame — the midfield view with the center circle works best — then let `analysis/pan_chain.py` track the camera motion and carry that calibration across the whole clip:
 
 ```
 python3 analysis/pan_chain.py clip.mp4 --calib calib.json --ref-time 14.3 --out chainH.json
