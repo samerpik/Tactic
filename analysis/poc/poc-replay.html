@@ -61,6 +61,15 @@
   #possTrack { flex: 1; height: 7px; border-radius: 4px; overflow: hidden; display: flex; background: #22344e; }
   #possCity { background: #6ec1ea; height: 100%; width: 50%; transition: width .3s linear; }
   #possSpurs { background: #f2f5f8; height: 100%; flex: 1; }
+  #tact {
+    width: min(860px, 92vw);
+    display: flex; flex-direction: column; gap: 3px;
+    font-size: 12px; color: var(--muted);
+    margin-top: 4px;
+  }
+  #tact .row { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; overflow-x: auto; }
+  #tact .chip { color: var(--text); background: #1a2c45; border: 1px solid #2c4360; border-radius: 6px; padding: 1px 7px; cursor: default; }
+  #tact .tname { min-width: 44px; font-weight: 600; }
 </style>
 
 <header>
@@ -74,6 +83,7 @@
   <span id="possR">50% Spurs</span>
   <span style="color:#4a5f78">· possession</span>
 </div>
+<div id="tact"></div>
 <div id="bar">
   <button id="btnPlay" title="Play / pause">❚❚</button>
   <input id="seek" type="range" min="0" max="1000" value="0">
@@ -84,6 +94,7 @@
     <span><span class="dot" style="background:#f6b93b"></span>Ball</span>
   </span>
   <button id="btnStats" class="on" title="Speed &amp; distance per player">STATS</button>
+  <button id="btnTact" class="on" title="Auto-derived tactical profile" style="background:none;border:1px solid #2c4360;color:var(--accent);border-color:var(--accent);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;letter-spacing:.4px;flex-shrink:0">TACTICS</button>
 </div>
 <script>
 "use strict";
@@ -219,6 +230,57 @@ function statAt(arr, t) {
   return v1 + (v2 - v1) * u;
 }
 
+/* --- auto-derived tactical profile (aggregate over the passage) ---------
+   compactness / width / depth from observed outfield positions per frame,
+   block height from the team centroid's distance to its own goal (known
+   from the keeper's side), transition tempo from the speed layer. Each
+   label carries the metric it came from — hover a chip for the reason. */
+function tacticalProfile(prefix) {
+  const outf = SLOTS.filter(s => s[0] === prefix && s !== prefix + "1");
+  const comp = [], wid = [], dep = [], cxs = [];
+  for (let i = 0; i < N; i++) {
+    const f = DATA.frames[i], o = new Set(f.o || []);
+    const pts = outf.filter(s => f.p[s] && o.has(s)).map(s => f.p[s]);
+    if (pts.length < 4) continue;
+    const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+    const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+    comp.push(pts.reduce((a, p) => a + Math.hypot(p[0]-cx, p[1]-cy), 0) / pts.length);
+    wid.push(Math.sqrt(pts.reduce((a, p) => a + (p[1]-cy)**2, 0) / pts.length));
+    dep.push(Math.sqrt(pts.reduce((a, p) => a + (p[0]-cx)**2, 0) / pts.length));
+    cxs.push(cx);
+  }
+  const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+  const gk = DATA.frames.map(f => f.p[prefix + "1"]).filter(Boolean);
+  const ownGoal = gk.length ? (avg(gk.map(p => p[0])) < 52.5 ? 0 : 105)
+                            : (avg(cxs) >= 52.5 ? 0 : 105);
+  const speeds = [];
+  for (const s of outf) for (const v of SPEED[s]) if (v != null) speeds.push(v);
+  const m = { comp: avg(comp), wid: avg(wid), dep: avg(dep),
+              block: Math.abs(avg(cxs) - ownGoal), spd: avg(speeds) };
+  const compL = m.comp < 18 ? "Compact" : m.comp > 26 ? "Wide" : "Balanced";
+  const pressL = m.block > 58 ? "High Press" : m.block < 40 ? "Low Block" : "Mid Block";
+  const transL = m.spd > 9.5 ? "Fast transitions" : m.spd < 7 ? "Slow transitions" : "Medium tempo";
+  const buildL = (m.dep > 22 || m.spd > 9.5) ? "Direct" :
+                 (m.dep < 16 && m.spd <= 9.5) ? "Short passing" : "Mixed build-up";
+  return [
+    [compL, `players average ${m.comp.toFixed(1)} m from the team centroid`],
+    [pressL, `block ~${m.block.toFixed(0)} m up from its own goal`],
+    [buildL, `${m.dep.toFixed(1)} m vertical spread at ${m.spd.toFixed(1)} km/h average`],
+    [transL, `average outfield speed ${m.spd.toFixed(1)} km/h over the passage`],
+  ];
+}
+{
+  const el = document.getElementById("tact");
+  for (const [prefix, name, col] of [["H", "City", "#6ec1ea"], ["A", "Spurs", "#f2f5f8"]]) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="tname" style="color:${col}">${name}</span>` +
+      tacticalProfile(prefix).map(([l, r]) => `<span class="chip" title="${r}">${l}</span>`).join("") +
+      (prefix === "A" ? `<span style="color:#4a5f78">· tactics, auto-derived — hover for why</span>` : "");
+    el.appendChild(row);
+  }
+}
+
 function kitOf(slot) {
   if (slot === "H1") return { fill: "#2eae5f", text: "#06301a", ring: "#bff5d2" };   // Ederson green
   if (slot === "A1") return { fill: "#f0842c", text: "#4a2404", ring: "#ffd9b3" };   // Lloris orange
@@ -312,6 +374,13 @@ document.getElementById("btnPlay").onclick = () => {
 document.getElementById("seek").addEventListener("input", e => {
   t = DUR * e.target.value / 1000; trail = []; draw();
 });
+document.getElementById("btnTact").onclick = () => {
+  const el = document.getElementById("tact"), btn = document.getElementById("btnTact");
+  const on = el.style.display !== "none";
+  el.style.display = on ? "none" : "";
+  btn.style.color = on ? "var(--muted)" : "var(--accent)";
+  btn.style.borderColor = on ? "#2c4360" : "var(--accent)";
+};
 document.getElementById("btnStats").onclick = () => {
   statsOn = !statsOn;
   document.getElementById("btnStats").classList.toggle("on", statsOn);

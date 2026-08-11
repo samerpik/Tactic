@@ -32,15 +32,29 @@ for kf in tracks_raw:
         if "color" in d:
             o["colors"].append(d["color"])
 
-def kit_of_color(bgr_mean):
-    """full classifier: keepers wear green (Ederson) / orange (Lloris)."""
-    b = np.uint8([[bgr_mean]])
-    h, s, v = cv2.cvtColor(b, cv2.COLOR_BGR2HSV)[0, 0].astype(int)
-    if h < 28 and s >= 90: return "orange"
-    if 30 <= h < 78 and s >= 50: return "green"
-    cyan_score = (44 <= s) * max(0, 34 - abs(int(h) - 95))
-    white_score = max(0, 44 - int(s))
-    return "cyan" if cyan_score > white_score else "white"
+# --- match-agnostic team discovery (no hardcoded kit colors) ---------------
+# The two teams are k-means clusters of the stable tracks' shirt colors in
+# Lab space; tracks far from both centroids (keeper kits) become outliers.
+from team_cluster import discover_teams, to_lab
+
+CENT, team_of_cluster, cluster_outliers = discover_teams(obs)
+
+def _hue_of(lab_c):
+    bgr = cv2.cvtColor(np.uint8([[lab_c]]), cv2.COLOR_LAB2BGR)[0, 0]
+    return cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2HSV)[0, 0]
+
+# name the clusters for the board's home/away convention: the more
+# saturated centroid is the colored kit (home side here)
+_h0, _s0, _ = _hue_of(CENT[0]); _h1, _s1, _ = _hue_of(CENT[1])
+CYAN_CLUSTER = 0 if _s0 >= _s1 else 1
+
+def team_of_track(tid, colors):
+    j = team_of_cluster.get(tid)
+    if j is None:
+        if not colors: return None
+        v = to_lab(np.median(colors, axis=0))
+        j = int(np.argmin(np.linalg.norm(v - CENT, axis=1)))
+    return "cyan" if j == CYAN_CLUSTER else "white"
 
 def pitch_at(o, t, tol):
     """nearest observation of this id within tol seconds, projected."""
@@ -57,9 +71,9 @@ for tid, o in obs.items():
     if o["cls"].get(3, 0) > tot / 2: continue    # referees excluded by class
     span = o["ts"][-1][0] - o["ts"][0][0]
     if span < 0.4: continue                      # blips
-    kitc = kit_of_color(np.mean(o["colors"], axis=0)) if o["colors"] else None
-    # keeper: enough keeper-class votes OR a keeper kit color
-    keeper = o["cls"].get(1, 0) >= 0.3 * tot or kitc in ("green", "orange")
+    kitc = team_of_track(tid, o["colors"])
+    # keeper: enough keeper-class votes OR a kit unlike both team clusters
+    keeper = o["cls"].get(1, 0) >= 0.3 * tot or tid in cluster_outliers
     # touchline officials project just off the pitch - drop by median position
     pts = [to_pitch(H_at(t), *im) for t, im in o["ts"][::5]]
     mx = float(np.median([p[0] for p in pts])); my = float(np.median([p[1] for p in pts]))
@@ -88,6 +102,12 @@ def try_stitch(pool):
                 pb = pitch_at(b["o"], max(b["t0"], a["t1"]), 0.4)
                 if not pa or not pb: continue
                 d = np.hypot(pa[0]-pb[0], pa[1]-pb[1])
+                # appearance gate: never stitch fragments whose shirt colors
+                # clearly disagree, even if their paths line up
+                if a["o"]["colors"] and b["o"]["colors"]:
+                    dl = np.linalg.norm(to_lab(np.median(a["o"]["colors"], axis=0))
+                                        - to_lab(np.median(b["o"]["colors"], axis=0)))
+                    if dl > 45: continue
                 if d <= 2.0 + 4.0 * max(gap, 0) and (best is None or d < best[1]):
                     best = (b, d)
             if best:
